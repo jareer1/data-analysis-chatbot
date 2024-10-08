@@ -16,7 +16,7 @@ parent_dir = os.path.join(current_dir, "..")
 
 # Add the parent directory to sys.path
 sys.path.insert(0, parent_dir)
-os.environ['OPENAI_API_KEY'] = "enter-your-key"
+os.environ['OPENAI_API_KEY'] = "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"
 
 st.set_page_config(page_title="ProjectPro Query Based Analytics")
 

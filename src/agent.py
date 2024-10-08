@@ -45,7 +45,7 @@ chat_openai_model_kwargs = {
 # db = SQLDatabase.from_uri(f"mysql://root:{password}@localhost:3306/ecommerce")
 
 
-db = SQLDatabase.from_uri("mysql://localhost:3306/ecommerce?user=root")
+db = SQLDatabase.from_uri("mysql://root:jareer@localhost:3306/ecommerce")
 
 
 def get_chat_openai(model_name):
@@ -117,7 +117,7 @@ def create_agent_for_sql(tool_llm_name: str = "gpt-4-0125-preview", agent_llm_na
     toolkit = get_sql_toolkit(tool_llm_name)
     message_history = SQLChatMessageHistory(
         session_id="my-session",
-        connection_string="mysql://localhost:3306/ecommerce?user=root", # use this if password need f"mysql://root:{password}@localhost:3306/ecommerce"
+        connection_string="mysql://root:jareer@localhost:3306/ecommerce",
         table_name="message_store",
         session_id_field_name="session_id"
     )
