@@ -38,27 +38,10 @@ chat_openai_model_kwargs = {
     "presence_penalty": -1,
 }
 
-# Code if you've set up passowrd in mysql
-# import urllib.parse
-
-# password = urllib.parse.quote_plus("you-password")  # Replace "your#password" with your actual password
-# db = SQLDatabase.from_uri(f"mysql://root:{password}@localhost:3306/ecommerce")
-
-
-db = SQLDatabase.from_uri("mysql://root:jareer@localhost:3306/ecommerce")
-
+sql_db = 'postgresql://tsdbadmin:tbo0mp4fvj2aukky@pg9i4yanln.f38anlyk4s.tsdb.cloud.timescale.com:33188/tsdb'
+db=SQLDatabase.from_uri(sql_db)
 
 def get_chat_openai(model_name):
-    """
-    Returns an instance of the ChatOpenAI class initialized with the specified model name.
-
-    Args:
-        model_name (str): The name of the model to use.
-
-    Returns:
-        ChatOpenAI: An instance of the ChatOpenAI class.
-
-    """
     llm = ChatOpenAI(
         model_name=model_name,
         model_kwargs=chat_openai_model_kwargs,
@@ -68,50 +51,19 @@ def get_chat_openai(model_name):
 
 
 def get_sql_toolkit(tool_llm_name: str):
-    """
-    Instantiates a SQLDatabaseToolkit object with the specified language model.
 
-    This function creates a SQLDatabaseToolkit object configured with a language model
-    obtained by the provided model name. The SQLDatabaseToolkit facilitates SQL query
-    generation and interaction with a database.
-
-    Args:
-        tool_llm_name (str): The name or identifier of the language model to be used.
-
-    Returns:
-        SQLDatabaseToolkit: An instance of SQLDatabaseToolkit initialized with the provided language model.
-    """
     llm_tool = get_chat_openai(model_name=tool_llm_name)
     toolkit = SQLDatabaseToolkit(db=db, llm=llm_tool)
     return toolkit
 
 
 def get_agent_llm(agent_llm_name: str):
-    """
-    Retrieve a language model agent for conversational tasks.
-
-    Args:
-        agent_llm_name (str): The name or identifier of the language model for the agent.
-
-    Returns:
-        ChatOpenAI: A language model agent configured for conversational tasks.
-    """
     llm_agent = get_chat_openai(model_name=agent_llm_name)
     return llm_agent
 
 
 def create_agent_for_sql(tool_llm_name: str = "gpt-4-0125-preview", agent_llm_name: str = "gpt-4-0125-preview"):
-    """
-    Create an agent for SQL-related tasks.
 
-    Args:
-        tool_llm_name (str): The name or identifier of the language model for SQL toolkit.
-        agent_llm_name (str): The name or identifier of the language model for the agent.
-
-    Returns:
-        Agent: An agent configured for SQL-related tasks.
-
-    """
     # agent_tools = sql_agent_tools()
     llm_agent = get_agent_llm(agent_llm_name)
     toolkit = get_sql_toolkit(tool_llm_name)
@@ -139,16 +91,7 @@ def create_agent_for_sql(tool_llm_name: str = "gpt-4-0125-preview", agent_llm_na
 
 
 def create_agent_for_python(agent_llm_name: str = "gpt-4-0125-preview"):
-    """
-    Create an agent for Python-related tasks.
 
-    Args:
-        agent_llm_name (str): The name or identifier of the language model for the agent.
-
-    Returns:
-        AgentExecutor: An agent executor configured for Python-related tasks.
-
-    """
     instructions = """You are an agent designed to write a python code to answer questions.
             You have access to a python REPL, which you can use to execute python code.
             If you get an error, debug your code and try again.
@@ -156,7 +99,9 @@ def create_agent_for_python(agent_llm_name: str = "gpt-4-0125-preview"):
             If it does not seem like you can write code to answer the question, just return "I don't know" as the answer.
             Always output the python code only.
             Generate the code <code> for plotting the previous data in plotly, in the format requested. 
-            The solution should be given using plotly and only plotly. Do not use matplotlib.
+            The solution should be given using plotly and only plotly. Do not use matplotlib.  
+            You must only generate plots based on data retrieved from SQL queries, not on assumptions.
+            DO NOT USE ANY DUMMY DATA FOR ANY TYPES OF GRAPHS.
             Return the code <code> in the following
             format ```python <code>```
             """
