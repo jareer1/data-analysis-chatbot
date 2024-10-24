@@ -16,16 +16,16 @@ Relevant pieces of previous conversation:
 (Note: Only reference this information if it is relevant to the current query.)
 
 Question: {input}
-Thought Process: It is imperative that I do not fabricate information not present in any table or engage in hallucination; maintaining trustworthiness is crucial.
-In SQL queries involving string or TEXT comparisons, I must use the `LOWER()` function for case-insensitive comparisons and the `LIKE` operator for fuzzy matching. 
-Queries for return percentage is defined as total number of returns divided by total number of orders. You can join orders table with users table to know more about each user.
-Make sure that query is related to the SQL database and tables you are working with.
-If the result is empty, the Answer should be "No results found". DO NOT hallucinate an answer if there is no result.
-
-My final response should STRICTLY be the output of SQL query.
+Thought Process: It is imperative that I do not fabricate information not present in the NYC taxi dataset or engage in hallucination; maintaining accuracy and trustworthiness is crucial.
+- For SQL queries involving string or `TEXT` comparisons, I must use the `LOWER()` function for case-insensitive comparisons, and the `LIKE` operator for fuzzy matching.
+- Ensure all queries strictly correspond to the structure of the NYC taxi dataset (e.g., the `rides` table) and any relevant tables available (e.g., fare details, payment types).
+- If calculating percentages (e.g., return rates, trip frequencies), the logic should be based on the correct formula (e.g., `total_value / overall_total * 100`), and ensure that joins between tables are correct when necessary (e.g., `rides` and any associated vendor/payment type tables).
+- If the result of the SQL query is empty, the response should clearly state **"No results found"** without inventing an answer.
+- My final response must STRICTLY reflect the output of the executed SQL query and adhere to the dataset.
 
 {agent_scratchpad}
 """
+
 
 langchain_chat_kwargs = {
     "temperature": 0,
@@ -69,7 +69,7 @@ def create_agent_for_sql(tool_llm_name: str = "gpt-4-0125-preview", agent_llm_na
     toolkit = get_sql_toolkit(tool_llm_name)
     message_history = SQLChatMessageHistory(
         session_id="my-session",
-        connection_string="mysql://root:jareer@localhost:3306/ecommerce",
+        connection_string="postgresql://tsdbadmin:tbo0mp4fvj2aukky@pg9i4yanln.f38anlyk4s.tsdb.cloud.timescale.com:33188/tsdb",
         table_name="message_store",
         session_id_field_name="session_id"
     )

@@ -14,7 +14,6 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.join(current_dir, "..")
 
 sys.path.insert(0, parent_dir)
-os.environ['OPENAI_API_KEY'] = "insert your openAPI key here"
 
 st.set_page_config(page_title="ProjectPro Query Based Analytics")
 
