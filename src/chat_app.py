@@ -10,11 +10,10 @@ from agent import create_agent_for_python, create_agent_for_sql
 warnings.filterwarnings("ignore")
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
-
+os.environ['OPENAI_API_KEY'] ="enter open AI api key here"
 parent_dir = os.path.join(current_dir, "..")
 
 sys.path.insert(0, parent_dir)
-
 st.set_page_config(page_title="ProjectPro Query Based Analytics")
 
 if 'agent_memory' not in st.session_state:

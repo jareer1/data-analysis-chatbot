@@ -22,10 +22,9 @@ Thought Process: It is imperative that I do not fabricate information not presen
 - If calculating percentages (e.g., return rates, trip frequencies), the logic should be based on the correct formula (e.g., `total_value / overall_total * 100`), and ensure that joins between tables are correct when necessary (e.g., `rides` and any associated vendor/payment type tables).
 - If the result of the SQL query is empty, the response should clearly state **"No results found"** without inventing an answer.
 - My final response must STRICTLY reflect the output of the executed SQL query and adhere to the dataset.
-
+-If the user prompt is related to VISUALIZATION OR GRAPH,just output all the data you have found using SQL query, DO NOT EXPLAIN THE GRAPH OR ANYTHING.
 {agent_scratchpad}
 """
-
 
 langchain_chat_kwargs = {
     "temperature": 0,
@@ -39,7 +38,8 @@ chat_openai_model_kwargs = {
 }
 
 sql_db = 'postgresql://tsdbadmin:tbo0mp4fvj2aukky@pg9i4yanln.f38anlyk4s.tsdb.cloud.timescale.com:33188/tsdb'
-db=SQLDatabase.from_uri(sql_db)
+db = SQLDatabase.from_uri(sql_db)
+
 
 def get_chat_openai(model_name):
     llm = ChatOpenAI(
@@ -51,7 +51,6 @@ def get_chat_openai(model_name):
 
 
 def get_sql_toolkit(tool_llm_name: str):
-
     llm_tool = get_chat_openai(model_name=tool_llm_name)
     toolkit = SQLDatabaseToolkit(db=db, llm=llm_tool)
     return toolkit
@@ -63,8 +62,6 @@ def get_agent_llm(agent_llm_name: str):
 
 
 def create_agent_for_sql(tool_llm_name: str = "gpt-4-0125-preview", agent_llm_name: str = "gpt-4-0125-preview"):
-
-    # agent_tools = sql_agent_tools()
     llm_agent = get_agent_llm(agent_llm_name)
     toolkit = get_sql_toolkit(tool_llm_name)
     message_history = SQLChatMessageHistory(
@@ -73,7 +70,8 @@ def create_agent_for_sql(tool_llm_name: str = "gpt-4-0125-preview", agent_llm_na
         table_name="message_store",
         session_id_field_name="session_id"
     )
-    memory = ConversationBufferMemory(memory_key="chat_history", input_key='input', chat_memory=message_history, return_messages=False)
+    memory = ConversationBufferMemory(memory_key="chat_history", input_key='input', chat_memory=message_history,
+                                      return_messages=False)
 
     agent = create_sql_agent(
         llm=llm_agent,
@@ -83,28 +81,22 @@ def create_agent_for_sql(tool_llm_name: str = "gpt-4-0125-preview", agent_llm_na
         suffix=CUSTOM_SUFFIX,
         memory=memory,
         agent_executor_kwargs={"memory": memory},
-        # handle_parsing_errors=True,
-        # extra_tools=agent_tools,
         verbose=True,
     )
     return agent
 
 
 def create_agent_for_python(agent_llm_name: str = "gpt-4-0125-preview"):
+    instructions = """You are an agent designed to write Python code to answer questions using data retrieved from SQL queries. You have access to a Python REPL, which you can use to execute Python code. If you encounter an error, debug your code and try again.
 
-    instructions = """You are an agent designed to write a python code to answer questions.
-            You have access to a python REPL, which you can use to execute python code.
-            If you get an error, debug your code and try again.
-            You might know the answer without running any code, but you should still run the code to get the answer.
-            If it does not seem like you can write code to answer the question, just return "I don't know" as the answer.
-            Always output the python code only.
-            Generate the code <code> for plotting the previous data in plotly, in the format requested. 
-            The solution should be given using plotly and only plotly. Do not use matplotlib.  
-            You must only generate plots based on data retrieved from SQL queries, not on assumptions.
-            DO NOT USE ANY DUMMY DATA FOR ANY TYPES OF GRAPHS.
-            Return the code <code> in the following
-            format ```python <code>```
-            """
+    You should only generate plots based on data retrieved from SQL queries, ensuring that no assumptions,HYPOTHETICAL or dummy data are used. Clearly specify the SQL query needed to obtain the data before plotting it.
+
+    The code must exclusively use Plotly for visualization; do not use Matplotlib. Return the code in the following format:
+    ```python
+    <code>
+    ```
+    """
+
     tools = [PythonREPLTool()]
     base_prompt = hub.pull("langchain-ai/openai-functions-template")
     prompt = base_prompt.partial(instructions=instructions)
