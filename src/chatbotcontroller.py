@@ -132,3 +132,36 @@ class ChatbotController:
         if session_id not in self.chat_histories:
             self.chat_histories[session_id] = []
         self.chat_histories[session_id].append(message)
+
+    def connect_to_sql(self):
+        try:
+            data = request.json
+            db_type = data.get("db_type")
+            username = data.get("username")
+            password = data.get("password")
+            host = data.get("host")
+            port = data.get("port")
+            database_name = data.get("database_name")
+
+            if not all([db_type, username, password, host, port, database_name]):
+                return jsonify({"error": "All connection details  are required."}), 400
+
+            connection_string = self.backend_service.getSqlData(
+                db_type=db_type,
+                username=username,
+                password=password,
+                host=host,
+                port=port,
+                database_name=database_name
+            )
+            print("Connection String:", connection_string)
+
+
+            # Return the query result
+            return 200
+
+        except Exception as e:
+            return jsonify({
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }), 500
