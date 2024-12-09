@@ -8,12 +8,16 @@ from helper import display_python_code_plots, display_text_with_images
 from agent import create_agent_for_python, create_agent_for_sql
 
 warnings.filterwarnings("ignore")
-current_dir = os.path.dirname(os.path.abspath(__file__))
+current_dir = os.path.dirname(os.path.abspath(__file__)) # Get the directory of the current file
 
-os.environ['OPENAI_API_KEY'] ="enter open AI api key here"
+# Define the path relative to the current file
+# For example, if the directory to add is the parent directory of the current file
 parent_dir = os.path.join(current_dir, "..")
 
+# Add the parent directory to sys.path
 sys.path.insert(0, parent_dir)
+os.environ['OPENAI_API_KEY'] = "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"
+
 st.set_page_config(page_title="ProjectPro Query Based Analytics")
 
 if 'agent_memory' not in st.session_state:
@@ -22,7 +26,20 @@ if 'agent_memory' not in st.session_state:
 
 
 def generate_response(code_type, input_text):
+    """
+    Generate a response based on the provided input text and code type.
 
+    This function takes input text and a code type (e.g., "python" or "sql") and generates a response
+    using corresponding agents for the given code type.
+
+    Args:
+        code_type (str): The type of code to be generated ("python" or "sql").
+        input_text (str): The input text to be processed.
+
+    Returns:
+        str: The generated response based on the input text and code type. If no response is generated,
+        it returns "NO_RESPONSE".
+    """
     prompt = unidecode.unidecode(input_text)
     if code_type == "python":
         try:
@@ -45,6 +62,7 @@ def reset_conversation():
     st.session_state.python_agent = create_agent_for_python()
 
 
+# Initialize chat history
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -58,6 +76,7 @@ col1, col2 = st.columns([3, 1])
 with col2:
     st.button("Reset Chat", on_click=reset_conversation)
 
+# Display chat messages from history on app rerun
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         if message["role"] in ("assistant", "error"):
@@ -68,12 +87,15 @@ for message in st.session_state.messages:
             st.markdown(message["content"])
 
 
+# Accept user input
 if prompt := st.chat_input("Please ask your question:"):
+    # Display user message in chat message container
     with st.chat_message("user"):
         st.markdown(prompt)
+    # Add user message to chat history
     st.session_state.messages.append({"role": "user", "content": prompt})
 
-    keywords = ["plot", "graph", "chart", "diagram"]
+    keywords = ["plot", "graph", "chart", "diagram",'bar','visualization ']
     if any(token in prompt.lower() for token in keywords):
         prev_context = ""
         for msg in reversed(st.session_state.messages):
@@ -115,6 +137,8 @@ if prompt := st.chat_input("Please ask your question:"):
             response = generate_response("sql", prompt + "\n\nGiven previous agent responses:\n" + prev_context + "\n")
         else:
             response = generate_response("sql", prompt)
+        # Display assistant response in chat message container
         with st.chat_message("assistant"):
             display_text_with_images(response)
+        # Add assistant response to chat history
         st.session_state.messages.append({"role": "assistant", "content": response})
