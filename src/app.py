@@ -11,7 +11,6 @@ controller = ChatbotController()
 
 # Add routes to the app
 app.add_url_rule('/query/user_prompt', 'user_prompt', controller.process_user_input, methods=['POST'])
-app.add_url_rule('/getSqlData', 'getSqlData', controller.connect_to_sql, methods=['POST'])
 
 if __name__ == "__main__":
     # Run the Flask app
