@@ -95,3 +95,4 @@ plot_base64 = base64.b64encode(image_bytes).decode("utf-8")
     except Exception as e:
         print(f"Error executing code: {e}")
         return None
+
