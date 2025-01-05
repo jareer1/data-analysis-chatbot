@@ -76,69 +76,91 @@ col1, col2 = st.columns([3, 1])
 with col2:
     st.button("Reset Chat", on_click=reset_conversation)
 
-# Display chat messages from history on app rerun
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        if message["role"] in ("assistant", "error"):
-            display_text_with_images(message["content"])
-        elif message["role"] == "plot":
-            exec(message["content"])
-        else:
-            st.markdown(message["content"])
+# Form for Database Connection
+if "form_submitted" not in st.session_state:
+    st.session_state["form_submitted"] = False
 
+if not st.session_state["form_submitted"]:
+    with st.form("db_connection_form", clear_on_submit=True):
+        st.subheader("Database Connection")
+        connection_string = st.text_input("Enter your database connection string:")
+        submitted = st.form_submit_button("Connect")
 
-# Accept user input
-if prompt := st.chat_input("Please ask your question:"):
-    # Display user message in chat message container
-    with st.chat_message("user"):
-        st.markdown(prompt)
-    # Add user message to chat history
-    st.session_state.messages.append({"role": "user", "content": prompt})
+        if submitted:
+            if connection_string:
+                st.session_state["db_connection_string"] = connection_string
+                st.session_state["form_submitted"] = True
+                st.success("Connection string saved successfully!")
+else:
+    # Display Chatbot Interface
+    st.title("ProjectPro Query Based Analytics")
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        st.button("Reset Chat", on_click=reset_conversation)
 
-    keywords = ["plot", "graph", "chart", "diagram",'bar','visualization ']
-    if any(token in prompt.lower() for token in keywords):
-        prev_context = ""
-        for msg in reversed(st.session_state.messages):
-            if msg["role"] == "assistant":
-                prev_context = msg["content"] + "\n\n" + prev_context
-                break
-        if len(prev_context) > 0:
-            prompt = prompt + "\n\nGiven previous agent responses:\n" + prev_context + "\n"
-        response = generate_response("python", prompt)
-        if response == "NO_RESPONSE":
-            response = "Please try again with a re-phrased query and more context"
-            with st.chat_message("error"):
-                display_text_with_images(response)
-            st.session_state.messages.append(
-                {"role": "error", "content": response})
-        else:
-            code = display_python_code_plots(response['output'])
-            try:
-                code = "import pandas as pd\n" + code.replace("fig.show()", "")
-                code += "st.plotly_chart(fig, theme='streamlit', use_container_width=True)"
-                exec(code)
-                st.session_state.messages.append({"role": "plot", "content": code})
-            except:
+    # Display chat messages from history on app rerun
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            if message["role"] in ("assistant", "error"):
+                display_text_with_images(message["content"])
+            elif message["role"] == "plot":
+                exec(message["content"])
+            else:
+                st.markdown(message["content"])
+
+    # Accept user input
+    if prompt := st.chat_input("Please ask your question:"):
+        # Display user message in chat message container
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        # Add user message to chat history
+        st.session_state.messages.append({"role": "user", "content": prompt})
+
+        keywords = ["plot", "graph", "chart", "diagram", 'bar', 'visualization ']
+        if any(token in prompt.lower() for token in keywords):
+            prev_context = ""
+            for msg in reversed(st.session_state.messages):
+                if msg["role"] == "assistant":
+                    prev_context = msg["content"] + "\n\n" + prev_context
+                    break
+            if len(prev_context) > 0:
+                prompt = prompt + "\n\nGiven previous agent responses:\n" + prev_context + "\n"
+                print('prompt is ', prompt)
+            response = generate_response("python", prompt)
+            if response == "NO_RESPONSE":
                 response = "Please try again with a re-phrased query and more context"
                 with st.chat_message("error"):
                     display_text_with_images(response)
                 st.session_state.messages.append(
                     {"role": "error", "content": response})
-    else:
-        if len(st.session_state.messages) > 1:
-            context_length = 0
-            prev_context = ""
-            for msg in reversed(st.session_state.messages):
-                if context_length > 1:
-                    break
-                if msg["role"] == "assistant":
-                    prev_context = msg["content"] + "\n\n" + prev_context
-                    context_length += 1
-            response = generate_response("sql", prompt + "\n\nGiven previous agent responses:\n" + prev_context + "\n")
+            else:
+                code = display_python_code_plots(response['output'])
+                try:
+                    code = "import pandas as pd\n" + code.replace("fig.show()", "")
+                    code += "st.plotly_chart(fig, theme='streamlit', use_container_width=True)"
+                    exec(code)
+                    st.session_state.messages.append({"role": "plot", "content": code})
+                except:
+                    response = "Please try again with a re-phrased query and more context"
+                    with st.chat_message("error"):
+                        display_text_with_images(response)
+                    st.session_state.messages.append(
+                        {"role": "error", "content": response})
         else:
-            response = generate_response("sql", prompt)
-        # Display assistant response in chat message container
-        with st.chat_message("assistant"):
-            display_text_with_images(response)
-        # Add assistant response to chat history
-        st.session_state.messages.append({"role": "assistant", "content": response})
+            if len(st.session_state.messages) > 1:
+                context_length = 0
+                prev_context = ""
+                for msg in reversed(st.session_state.messages):
+                    if context_length > 1:
+                        break
+                    if msg["role"] == "assistant":
+                        prev_context = msg["content"] + "\n\n" + prev_context
+                        context_length += 1
+                response = generate_response("sql", prompt + "\n\nGiven previous agent responses:\n" + prev_context + "\n")
+            else:
+                response = generate_response("sql", prompt)
+            # Display assistant response in chat message container
+            with st.chat_message("assistant"):
+                display_text_with_images(response)
+            # Add assistant response to chat history
+            st.session_state.messages.append({"role": "assistant", "content": response})

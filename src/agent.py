@@ -14,9 +14,10 @@ import config
 from langchain_openai import ChatOpenAI
 from langchain_openai import AzureChatOpenAI
 
+
 os.environ["OPENAI_API_KEY"]=config.OPENAI_API_KEY
 
-CUSTOM_PREFIX = """You are an expert SQL analyst working with a PostgreSQL database.
+CUSTOM_PREFIX = """You are an expert SQL analyst working with a database.
 Your task is to write clear, efficient, and accurate SQL queries.
 Always consider:
 1. Performance optimization
@@ -46,6 +47,8 @@ Remember to:
 - Complete ALL steps in the sequence including Final Answer.
 - Use CTEs for complex queries.
 - Format results clearly.
+- If you are unable to find answer to the query, just return I do not know the answer
+
 
 IMPORTANT:
 - Never include ```sql, ```, or any other markdown formatting in your Action Input.
@@ -54,19 +57,10 @@ IMPORTANT:
 Scratchpad: {agent_scratchpad}
 """
 
-langchain_chat_kwargs = {
-    "temperature": 0,
-    "max_tokens": 4000,
-    "verbose": True,
-}
-chat_openai_model_kwargs = {
-    "top_p": 1.0,
-    "frequency_penalty": 0.0,
-    "presence_penalty": -1,
-}
 
 
-db = SQLDatabase.from_uri("mysql://root:jareer@localhost:3306/ecommerce")
+
+# db = SQLDatabase.from_uri("mysql://root:jareer@localhost:3306/ecommerce")
 
 
 def get_chat_openai(model_name):
@@ -92,7 +86,7 @@ def get_chat_openai(model_name):
     return llm
 
 
-def get_sql_toolkit(tool_llm_name: str):
+def get_sql_toolkit(tool_llm_name: str,connectionString:str):
     """
     Instantiates a SQLDatabaseToolkit object with the specified language model.
 
@@ -106,6 +100,13 @@ def get_sql_toolkit(tool_llm_name: str):
     Returns:
         SQLDatabaseToolkit: An instance of SQLDatabaseToolkit initialized with the provided language model.
     """
+    # db_type = connectionString.split(":", 1)[0].lower()
+    #
+    # # Check if the database type is 'mysql'
+    # if db_type == 'mysql':
+    #     db = SQLDatabase.from_uri(connectionString)
+    # else:
+    db=SQLDatabase.from_uri(connectionString)
     llm_tool = get_chat_openai(model_name=tool_llm_name)
     toolkit = SQLDatabaseToolkit(db=db, llm=llm_tool)
     return toolkit
@@ -124,11 +125,12 @@ def get_agent_llm(agent_llm_name: str):
     llm_agent = get_chat_openai(model_name=agent_llm_name)
     return llm_agent
 
-def create_agent_for_sql(tool_llm_name: str = "gpt-4o", agent_llm_name: str = "gpt-4o"):
+def create_agent_for_sql(tool_llm_name: str = "gpt-4o", agent_llm_name: str = "gpt-4o",connectionString:str=''):
     """
     Create an agent for SQL-related tasks.
 
     Args:
+        connectionString:
         tool_llm_name (str): The name or identifier of the language model for SQL toolkit.
         agent_llm_name (str): The name or identifier of the language model for the agent.
 
@@ -138,10 +140,12 @@ def create_agent_for_sql(tool_llm_name: str = "gpt-4o", agent_llm_name: str = "g
     """
     # agent_tools = sql_agent_tools()
     llm_agent = get_agent_llm(agent_llm_name)
-    toolkit = get_sql_toolkit(tool_llm_name)
+    toolkit = get_sql_toolkit(tool_llm_name,connectionString)
+    print('sql string is ',connectionString)
     message_history = SQLChatMessageHistory(
         session_id="my-session",
-        connection="mysql://root:jareer@localhost:3306/ecommerce",        # use this if password need f"mysql://root:{password}
+        connection=connectionString,        # use this if password need f"mysql://root:{password}
+            # connection="mysql://root:jareer@localhost:3306/ecommerce",
         table_name="message_store",
         session_id_field_name="session_id"
     )
