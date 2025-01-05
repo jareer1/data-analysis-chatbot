@@ -15,3 +15,7 @@ psycopg2
 langchain-core
 langchain
 flask
+kaleido
+psycopg2
+psycopg2-binary
+flask_cors
