@@ -63,7 +63,7 @@ class ChatbotController:
 
                 # Python agent processing for visualization with chat history
                 prompt = {
-                    "input": f"Write a code in Python to plot the following data:\n\n{sql_output}",
+                    "input": f"Write a code in Python to plot the following data:\n\n{sql_output}, remember this was the user query {user_input}",
                     "history": []
                         # self.chat_histories[session_id],
                 }
