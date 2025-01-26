@@ -13,7 +13,7 @@ import os
 import config
 from langchain_openai import ChatOpenAI
 from langchain_openai import AzureChatOpenAI
-
+import json
 
 os.environ["OPENAI_API_KEY"]=config.OPENAI_API_KEY
 
@@ -181,6 +181,8 @@ def create_agent_for_python(agent_llm_name: str = "gpt-4-0125-preview"):
     You are an agent designed to answer Python-related questions and create Python code.
     - Always reason step-by-step before writing code. Think about what the user wants, and explain how you will solve the problem.
     - You have access to a Python REPL for executing Python code. Always debug and rerun if you encounter errors.
+    -"Ensure that all graphs are visually engaging, aesthetically pleasing, and designed with clarity and attention to detail. Use appropriate color schemes, clean layouts, and readable labels to enhance their appeal and effectiveness
+    - Always use colour combination which is aesthetically pleasing
     - Output your thought process followed by the Python code in this format:
 
         Reasoning:
@@ -191,7 +193,8 @@ def create_agent_for_python(agent_llm_name: str = "gpt-4-0125-preview"):
         <your Python code>
         ```
     - Use Plotly exclusively for visualizations and follow the requested format strictly.
-    - If you can't generate the code, respond with "I don't know."
+    - If you can't generate the code, respond with "I don't know.
+    Remember If you are not provided with data, never generate your own data, just respond with I dont know"
     """
 
     # Use a tool for Python execution
@@ -203,3 +206,7 @@ def create_agent_for_python(agent_llm_name: str = "gpt-4-0125-preview"):
     agent = create_openai_functions_agent(ChatOpenAI(model=agent_llm_name, temperature=0), tools, prompt)
     agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
     return agent_executor
+
+
+
+
