@@ -27,7 +27,8 @@ class ChatbotController:
             data = request.json
             # session_id = data.get('sessionId', None)
             user_input = data.get('input', '')
-            connectionString = data.get('connectionString', '')
+            # connectionString = data.get('connectionString', '')
+            connectionString="mysql://root:jareer@localhost:3306/ecommerce"
             print('connection string is ',connectionString)
             # if not session_id:
             #     return jsonify({"error": "sessionId is required."}), 400
