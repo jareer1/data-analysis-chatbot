@@ -7,6 +7,9 @@ import io
 from agent import create_agent_for_sql, create_agent_for_python
 import matplotlib.pyplot as plt
 from helper import display_python_code_plots
+from langchain_community.utilities import SQLDatabase
+import ast
+
 
 
 class ChatbotController:
@@ -46,14 +49,16 @@ class ChatbotController:
             keywords = ["plot", "graph", "chart", "diagram", "bar", "visualization"]
             if any(token in user_input.lower() for token in keywords):
                 # SQL agent processing with chat history
-                sql_payload = {"input": user_input,
+
+                print("Connection String:", connectionString)
+                db_schema_context = ChatbotController.get_db_schema("mysql://root:jareer@localhost:3306/ecommerce")
+                sql_input ='remember u r running queries for mysql '+ user_input + f'\n Database structure to consider is {db_schema_context}'
+                sql_payload = {"input": sql_input,
                                # "history": self.chat_histories[session_id]
                                }
                 sql_agent = create_agent_for_sql(tool_llm_name="gpt-4o", agent_llm_name="gpt-4o",
                                                  connectionString=connectionString
                                                  )
-                print("Connection String:", connectionString)
-
                 print(sql_payload)
 
                 sql_result = sql_agent.invoke(sql_payload)
@@ -85,13 +90,16 @@ class ChatbotController:
 
             else:
                 # SQL agent processing with chat history
+                db_schema_context = ChatbotController.get_db_schema("mysql://root:jareer@localhost:3306/ecommerce")
+                user_input ='remember u r running queries for mysql '+ user_input + f'\n Database structure to consider is {db_schema_context}'
+                print('user input is ',user_input)
                 sql_payload = {"input": user_input,
                                # "history": self.chat_histories[session_id]
                                }
                 sql_agent = create_agent_for_sql(tool_llm_name="gpt-4o", agent_llm_name="gpt-4o",
                                                  connectionString=connectionString
                                                  )
-                print("Connection String:", connectionString)
+
 
                 sql_result = sql_agent.invoke(sql_payload)
 
@@ -141,3 +149,31 @@ class ChatbotController:
             self.chat_histories[session_id] = []
         self.chat_histories[session_id].append(message)
 
+    def get_db_schema(connection_string: str):
+        query = """
+        SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE();
+        """
+        try:
+            db = SQLDatabase.from_uri(connection_string)
+
+            # Run the query and fetch results
+            schema_data = db.run(query)
+            print('Raw schema data:', schema_data)  # Debugging output
+
+            if not schema_data:
+                print("No data found, check the database or query.")
+            # Format schema data for context
+            schema_context = ""
+            schema_data = ast.literal_eval(schema_data.strip())
+
+            for table in schema_data:
+                print('table is ',table)
+                schema_context += f"Table: {table[0]}\n"  # Use index for tuple
+                schema_context += f"Columns: {table[1]} ({table[2]})\n"  # Use index for tuple
+
+            return schema_context
+
+        except Exception as e:
+            print(f"Error occurred: {str(e)}")
