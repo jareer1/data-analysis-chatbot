@@ -1,117 +1,120 @@
 import re
 import string
 import base64
-from flask import request, jsonify
 import traceback
 import io
-from agent import create_agent_for_sql, create_agent_for_python
+from flask import request, jsonify
 import matplotlib.pyplot as plt
+
+# Import your Python agent creator and display helper
+from chatbotService import ChatbotAgentService
 from helper import display_python_code_plots
+
+# Import SQLDatabase from langchain_community.utilities
+from langchain_community.utilities import SQLDatabase
+# Import AIMessage for constructing workflow input messages
+from langchain_core.messages import AIMessage
 
 
 class ChatbotController:
     def __init__(self):
         """
-        Initialize the SQL, Python, and Orchestrator agents when the class is instantiated,
-        and create a dictionary to manage chat histories.
+        Initialize the Python agent and a dictionary for managing chat histories.
+        The SQL query agent will be built using a LangGraph workflow on demand.
         """
-        self.python_agent = create_agent_for_python(agent_llm_name="gpt-4o")
         self.chat_histories = {}
 
     def process_user_input(self):
         """
-        Handles user input by coordinating between SQL and Python agents,
-        generating plots if necessary, and sending results to the frontend.
+        Handle user input by using a LangGraph workflow for SQL querying,
+        then (if needed) invoking the Python agent to generate visualizations.
         """
         try:
             data = request.json
-            # session_id = data.get('sessionId', None)
-            user_input = data.get('input', '')
-            # connectionString = data.get('connectionString', '')
-            connectionString="mysql://root:jareer@localhost:3306/ecommerce"
-            print('connection string is ',connectionString)
-            # if not session_id:
-            #     return jsonify({"error": "sessionId is required."}), 400
+            user_input = data.get("input", "")
+            connectionString = "mysql://root:jareer@localhost:3306/autobench"
+
+            print("Received user input:", user_input)  # Debugging line
+
             if not user_input:
                 return jsonify({"error": "Input is required."}), 400
 
-            # Initialize chat history for the session if not already present
-            # if session_id not in self.chat_histories:
-            #     self.chat_histories[session_id] = []
-            #
-            # # Step 1: Append user input to chat history
-            # self.chat_histories[session_id].append({"role": "user", "content": user_input})
+            chatbotAgentService = ChatbotAgentService()
+            db = SQLDatabase.from_uri(connectionString)
+            listTablesTool, getSchemaTool, _ = chatbotAgentService.createSqlToolkitTools(db)
+            dbQueryTool = chatbotAgentService.createDbQueryTool(db)
+            queryCheck = chatbotAgentService.createQueryCheckFunction(dbQueryTool)
+            workflow = chatbotAgentService.createWorkflow(
+                listTablesTool,
+                getSchemaTool,
+                dbQueryTool,
+                queryCheck,
+                ChatbotAgentService.createToolNodeWithFallback,
+            )
+            pythonAgent = chatbotAgentService.createAgentForPython()
 
-            # Step 2: Check if visualization is required
             keywords = ["plot", "graph", "chart", "diagram", "bar", "visualization"]
             if any(token in user_input.lower() for token in keywords):
-                # SQL agent processing with chat history
-                sql_payload = {"input": user_input,
-                               # "history": self.chat_histories[session_id]
-                               }
-                sql_agent = create_agent_for_sql(tool_llm_name="gpt-4o", agent_llm_name="gpt-4o",
-                                                 connectionString=connectionString
-                                                 )
-                print("Connection String:", connectionString)
+                reformatQuery=chatbotAgentService.reformatPromptForSql(user_input)
+                print('reformatted query is ',reformatQuery)
+                initial_message = AIMessage(content=reformatQuery, tool_calls=[])
+                state = {"messages": [initial_message]}
 
-                print(sql_payload)
+                print("State before workflow invocation:", state)
 
-                sql_result = sql_agent.invoke(sql_payload)
+                workflow_result = workflow.invoke(state, config={"recursion_limit": 50})
+                print('workflow result is ',workflow_result)
+                last_message_tuple = workflow_result['messages'][-1]
+                print('last AI message is ', last_message_tuple)
+                sql_output = last_message_tuple.tool_calls[0]['args']['final_answer']
+                print(sql_output)  # Debugging line
 
-                sql_output = sql_result.get("output", "")
                 if not sql_output:
-                    return jsonify({"error": "SQL agent did not return a result."}), 500
+                    return jsonify({"error": "SQL workflow did not return a result."}), 500
 
-                # Python agent processing for visualization with chat history
                 prompt = {
-                    "input": f"Write a code in Python to plot the following data:\n\n{sql_output}, remember this was the user query {user_input}",
+                    "input": (
+                        f"Write Python code to plot the following data:\n\n{sql_output}\n\n"
+                        f"Note: This query was generated from the user input: {user_input}"
+                    ),
                     "history": []
-                        # self.chat_histories[session_id],
                 }
-                python_result = self.python_agent.invoke(prompt)
+                python_result = pythonAgent.invoke(prompt)
                 python_output = python_result.get("output", "")
 
-                # Extract and execute Python code to generate the plot
+                print("Python Generated Code:", python_output)  # Debugging line
+
                 plot_image_base64 = display_python_code_plots(python_output)
                 if plot_image_base64:
-                    response_data = {
-                        "text": "",
-                        "plot_image": plot_image_base64,  # Base64 string of the image
-                    }
-                    return jsonify(response_data), 200
-
-                # If no valid plot generated
-                return jsonify({"error": "Failed to generate visualization."}), 500
+                    response=chatbotAgentService.formatResponse(plot_image_base64)
+                    print('respose is ',response)
+                    return jsonify({"text": "", "plot_image": response}), 200
+                else:
+                    return jsonify({"error": "Failed to generate visualization."}), 200
 
             else:
-                # SQL agent processing with chat history
-                sql_payload = {"input": "REMEMBER TO ALWAYS GIVE ANS IN A PROPER FORMAT "+user_input,
-                               # "history": self.chat_histories[session_id]
-                               }
-                sql_agent = create_agent_for_sql(tool_llm_name="gpt-4o", agent_llm_name="gpt-4o",
-                                                 connectionString=connectionString
-                                                 )
-                print("Connection String:", connectionString)
+                initial_message = AIMessage(
+                    content=user_input,
+                    tool_calls=[]
+                )
+                state = {"messages": [initial_message]}
 
-                sql_result = sql_agent.invoke(sql_payload)
+                print("State before workflow invocation:", state)  # Debugging line
 
-                # Ensure response_data is a dictionary, even if the SQL result is a string
-                response_data = sql_result.get("output", "")
+                workflow_result = workflow.invoke(state, config={"recursion_limit": 50})
+                print('workflow result ',workflow_result)
+                last_message_tuple = workflow_result['messages'][-1]
+                print('last AI message is ',last_message_tuple)
+                sql_output = last_message_tuple.tool_calls[0]['args']['final_answer']
+                print(sql_output)
+                response = chatbotAgentService.formatResponse(sql_output)
+                print('respose is ', response)
 
-                if not response_data:
-                    return jsonify({"error": "SQL agent did not return a result."}), 500
-
-                # If response_data is a string, convert it into a dictionary
-                if isinstance(response_data, str):
-                    response_data = {"text": response_data}
-
-                # Append SQL agent response to chat history
-                # self.update_chat_history(session_id, {"role": "sql_agent", "content": response_data["text"]})
-
-                # Format response
-                return jsonify(response_data), 200
+                return jsonify({"text": response}), 200
 
         except Exception as e:
+            print("Exception occurred:", str(e))  # Debugging line
+            print(traceback.format_exc())  # Debugging line
             return jsonify({
                 "error": str(e),
                 "traceback": traceback.format_exc()
@@ -119,26 +122,14 @@ class ChatbotController:
 
     def get_chat_history(self, session_id):
         """
-        Retrieve chat history for a specific session.
-
-        Args:
-            session_id (str): The session ID.
-
-        Returns:
-            list: The chat history for the given session.
+        Retrieve the chat history for a given session.
         """
         return self.chat_histories.get(session_id, [])
 
     def update_chat_history(self, session_id, message):
         """
-        Update chat history for a specific session.
-
-        Args:
-            session_id (str): The session ID.
-            message (dict): The message to append to the chat history.
+        Append a message to the chat history for a given session.
         """
         if session_id not in self.chat_histories:
             self.chat_histories[session_id] = []
         self.chat_histories[session_id].append(message)
-
-

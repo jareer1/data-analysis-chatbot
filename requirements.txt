@@ -17,3 +17,5 @@ kaleido
 flask_cors
 pymysql
 mysqlclient
+langgraph
+langchain_community
