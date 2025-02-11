@@ -1,5 +1,5 @@
-OPENAI_API_KEY="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"
-AZURE_OPENAI_ENDPOINT = "https://cognidata.openai.azure.com/"
-AZURE_OPENAI_API_KEY = "3sXbp2pMR6wgu0hCGxQHoxB4uADGpGtYBycbYH30jswvjBaFcvoLJQQJ99AKACYeBjFXJ3w3AAABACOG8T9Y"
-AZURE_OPENAI_API_VERSION = "2024-08-01-preview"
-AZURE_OPENAI_CHAT_DEPLOYMENT_NAME='cognidata-gpt-4o'
+OpenAIKey="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"
+AzureOpenAiEndpoint = "https://cognidata.openai.azure.com/"
+AzureOpenAiKey = "3sXbp2pMR6wgu0hCGxQHoxB4uADGpGtYBycbYH30jswvjBaFcvoLJQQJ99AKACYeBjFXJ3w3AAABACOG8T9Y"
+AzureOpenAiVersion = "2024-08-01-preview"
+AzureDeploymentName='cognidata-gpt-4o'
