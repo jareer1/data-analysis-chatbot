@@ -19,3 +19,4 @@ pymysql
 mysqlclient
 langgraph
 langchain_community
+seaborn

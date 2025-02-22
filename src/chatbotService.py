@@ -1,6 +1,9 @@
 import os
 import re
 from typing import Any, Annotated, Literal
+
+import pandas as pd
+from langchain_community.tools import ListSQLDatabaseTool, InfoSQLDatabaseTool
 from typing_extensions import TypedDict
 
 from langchain.agents import AgentExecutor, create_openai_functions_agent
@@ -23,11 +26,13 @@ from langgraph.graph.message import AnyMessage, add_messages
 from langgraph.prebuilt import ToolNode
 from langchain_core.tools import tool
 import config
+from langchain_community.agent_toolkits.sql.toolkit import (
+    QuerySQLDataBaseTool,
+    InfoSQLDatabaseTool,
+    ListSQLDatabaseTool,
+    QuerySQLCheckerTool,
+)
 
-
-# -------------------------------------------------------------------------------
-# A minimal SubmitFinalAnswer model
-# -------------------------------------------------------------------------------
 class SubmitFinalAnswer(BaseModel):
     """Submit the final answer to the user based on the query results."""
     final_answer: str = Field(..., description="The final answer to the user")
@@ -77,46 +82,13 @@ class ChatbotAgentService:
     def getAgentLLM(self, agentLLMName: str):
         return self.getChatOpenAI(modelName=agentLLMName)
 
-
-
-    def createAgentForPython(self, agentLLMName: str = "gpt-4-0125-preview") -> AgentExecutor:
-        instructions = (
-            "You are an agent designed to answer Python-related questions and create Python code.\n"
-            "- Always reason step-by-step before writing code. Think about what the user wants, and explain how you will solve the problem.\n"
-            "- You have access to a Python REPL for executing Python code. Always debug and rerun if you encounter errors.\n"
-            "- Ensure that all graphs are visually engaging, aesthetically pleasing, and designed with clarity and attention to detail. Use appropriate color schemes, clean layouts, and readable labels to enhance their appeal and effectiveness.\n"
-            "- Always use a colour combination which is aesthetically pleasing.\n"
-            "- Output your thought process followed by the Python code in this format:\n\n"
-            "    Reasoning:\n"
-            "    <your step-by-step reasoning>\n\n"
-            "    Code:\n"
-            "    ```python\n"
-            "    <your Python code>\n"
-            "    ```\n\n"
-            "- Use Plotly exclusively for visualizations and follow the requested format strictly.\n"
-            "- If you can't generate the code, respond with \"I don't know\".\n"
-            "Remember: If you are not provided with data, never generate your own data; just respond with \"I don't know\"."
-        )
-
-        tools = [PythonREPLTool()]
-        basePrompt = pull("langchain-ai/openai-functions-template")
-        prompt = basePrompt.partial(instructions=instructions)
-
-        agent = create_openai_functions_agent(
-            self.getChatOpenAI(modelName=agentLLMName),
-            tools,
-            prompt
-        )
-        agentExecutor = AgentExecutor(agent=agent, tools=tools, verbose=True)
-        return agentExecutor
-
-    @staticmethod
     def createToolNodeWithFallback(tools: list) -> RunnableWithFallbacks[Any, dict]:
         """
         Create a ToolNode with fallback error handling.
         """
         return ToolNode(tools).with_fallbacks(
-            [RunnableLambda(ChatbotAgentService.handleToolError)], exception_key="error"
+            [RunnableLambda(ChatbotAgentService.handleToolError)],
+            exception_key="error"
         )
 
     @staticmethod
@@ -133,9 +105,13 @@ class ChatbotAgentService:
             ]
         }
 
-    def createSqlToolkitTools(self, db):
+    # -----------------------------------------------------------------------
+    # 2) Build SQL Tools
+    # -----------------------------------------------------------------------
+    def createSqlToolkitTools(self, db: SQLDatabase):
         """
-        Create SQL toolkit tools for the given database instance.
+        Create SQL toolkit tools for the given database instance,
+        then rename them so they're called 'sql_db_list_tables' / 'sql_db_schema', etc.
         """
         databaseToolkit = SQLDatabaseToolkit(db=db, llm=self.getChatOpenAI(modelName="gpt-4"))
         allTools = databaseToolkit.get_tools()
@@ -143,7 +119,7 @@ class ChatbotAgentService:
         getSchemaTool = next(tool for tool in allTools if tool.name == "sql_db_schema")
         return listTablesTool, getSchemaTool, allTools
 
-    def createDbQueryTool(self, db):
+    def createDbQueryTool(self, db: SQLDatabase):
         """
         Create a decorated database query tool function for the given database instance.
         """
@@ -185,14 +161,15 @@ class ChatbotAgentService:
         queryCheckPrompt = ChatPromptTemplate.from_messages(
             [("system", queryGenSystem), ("placeholder", "{messages}")]
         )
+        # Adjust modelName if needed
         queryCheck = queryCheckPrompt | self.getChatOpenAI(modelName="gpt-4o").bind_tools(
             [dbQueryTool], tool_choice="required"
         )
         return queryCheck
 
-    # ---------------------------------------------------------------------------
-    # Graph node functions (as static methods)
-    # ---------------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # 3) Node logic
+    # -----------------------------------------------------------------------
     @staticmethod
     def firstToolCall(state: State) -> dict[str, list[AIMessage]]:
         """
@@ -217,10 +194,13 @@ class ChatbotAgentService:
     @staticmethod
     def queryGenNode(state: State, queryGen) -> dict[str, list[AIMessage]]:
         """
-        Generate a query based on the question and schema. Return error messages if the wrong tool is called.
+        Generate a query based on the question and schema.
+        Return error messages if the wrong tool is called.
         """
         message = queryGen.invoke(state)
         toolMessages = []
+
+
         if message.tool_calls:
             for tc in message.tool_calls:
                 if tc["name"] != "SubmitFinalAnswer":
@@ -239,13 +219,14 @@ class ChatbotAgentService:
 
     @staticmethod
     def shouldContinue(state: State) -> Literal[END, "correctQuery", "queryGen"]:
+        """
+        Decide whether to end or move to the next node, based on the last message content.
+        """
         messages = state["messages"]
         lastMessage = messages[-1]
-        print("DEBUG: shouldContinue method called")
-        print(f"DEBUG: Last message content: {lastMessage.content}")
-        print(f"DEBUG: Last message tool calls: {getattr(lastMessage, 'tool_calls', None)}")
+        print("DEBUG: Last message is:", lastMessage)
 
-        # If the LLM has produced a final answer (marker found), terminate.
+        # If the LLM has produced a final answer, terminate.
         if "Final Answer:" in lastMessage.content:
             print("DEBUG: Final Answer detected, ending workflow")
             return END
@@ -260,7 +241,7 @@ class ChatbotAgentService:
             print("DEBUG: Repeated message detected, ending workflow")
             return END
 
-        # If an error message was produced, trigger regeneration.
+        # If an error message was produced, go back and regenerate the query.
         if lastMessage.content.startswith("Error:"):
             print("DEBUG: Error message detected, regenerating query")
             return "queryGen"
@@ -268,9 +249,9 @@ class ChatbotAgentService:
         print("DEBUG: Proceeding to query checking")
         return "correctQuery"
 
-    # ---------------------------------------------------------------------------
-    # Build and compile the workflow using langgraph.
-    # ---------------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # 4) Build the workflow
+    # -----------------------------------------------------------------------
     def createWorkflow(
             self,
             listTablesTool,
@@ -280,33 +261,32 @@ class ChatbotAgentService:
             createToolNodeWithFallback,
     ):
         """
-        Build and compile the workflow state graph.
+        Build and compile the workflow state graph using langgraph.
         """
         workflow = StateGraph(State)
 
-        # Add nodes.
+        # 1) Node: triggers the listing of tables
         workflow.add_node("firstToolCall", ChatbotAgentService.firstToolCall)
         workflow.add_node("listTablesTool", createToolNodeWithFallback([listTablesTool]))
-        workflow.add_node("getSchemaTool", createToolNodeWithFallback([getSchemaTool]))
 
-        # Node for model to choose tables.
+        # 2) Node: get schema
+        workflow.add_node("getSchemaTool", createToolNodeWithFallback([getSchemaTool]))
         modelGetSchema = self.getChatOpenAI(modelName="gpt-4o").bind_tools([getSchemaTool])
         workflow.add_node(
-            "modelGetSchema", lambda state: {"messages": [modelGetSchema.invoke(state["messages"])]}
+            "modelGetSchema",
+            lambda state: {"messages": [modelGetSchema.invoke(state["messages"])]}
         )
 
-        # Build the query generation chain.
+        # 3) Build the query generation chain
         queryGenSystem = (
             "You are a SQL expert with a strong attention to detail.\n\n"
-            "Given an input question, output a syntactically correct mySQL query to run, "
+            "- Do not use any LIMIT statements in SQL.\n"
+            "FOR THE FINAL ANS JUST RETURN ALL THE VALUES THAT U GOT FROM DATABASE\n"
+            "Given an input question, output a syntactically correct MYSQL query to run\n "
             "then look at the results of the query and return the answer.\n\n"
             "When generating the query:\n\n"
-            "You can order the results by a relevant column to return the most interesting examples "
-            "in the database.\n"
-            "Never query for all the columns from a specific table, only ask for the relevant columns given the question.\n\n"
-             "NEVER make stuff up if you don't have enough information to answer the query... just say you don't have enough information.\n\n"
-            "If you have enough information to answer the input question, simply invoke the appropriate tool "
-            "to submit the final answer to the user.\n\n"
+            "You can order the results by a relevant column if needed for better readability.\n"
+            "NEVER make stuff up if you don't have enough information to answer the query... just say you don't have enough information.\n\n"
             "DO NOT make any DML statements (INSERT, UPDATE, DELETE, DROP etc.) to the database."
         )
         queryGenPrompt = ChatPromptTemplate.from_messages(
@@ -316,7 +296,6 @@ class ChatbotAgentService:
             [SubmitFinalAnswer]
         )
 
-        # Local node functions capturing queryGen and queryCheck.
         def localQueryGenNode(state: State) -> dict[str, list[AIMessage]]:
             return ChatbotAgentService.queryGenNode(state, queryGen)
 
@@ -327,19 +306,20 @@ class ChatbotAgentService:
         workflow.add_node("correctQuery", localModelCheckQuery)
         workflow.add_node("executeQuery", ChatbotAgentService.createToolNodeWithFallback([dbQueryTool]))
 
-        # Define edges.
+        # Edges
         workflow.add_edge(START, "firstToolCall")
         workflow.add_edge("firstToolCall", "listTablesTool")
         workflow.add_edge("listTablesTool", "modelGetSchema")
         workflow.add_edge("modelGetSchema", "getSchemaTool")
         workflow.add_edge("getSchemaTool", "queryGen")
+
+        # If "shouldContinue" says "correctQuery", go there; if "queryGen", go back; or end
         workflow.add_conditional_edges("queryGen", ChatbotAgentService.shouldContinue)
         workflow.add_edge("correctQuery", "executeQuery")
         workflow.add_edge("executeQuery", "queryGen")
 
         app = workflow.compile()
         return app
-
     def reformatPromptForSql(self, prompt: str) -> str:
         systemPrompt = (
             "You are an expert at transforming natural language queries into precise SQL-friendly descriptions. "
@@ -432,17 +412,742 @@ class ChatbotAgentService:
             print(f"Error in formatting response to markup: {e}")
             return f"<p>{response}</p>"
 
+    def convertResponseToDataFrame(self,response,userInput):
+        """
+        Uses an LLM to convert a text response into HTML markup based on its content.
+        """
+        # Clean response of markdown-style code fences
 
-    def format_response_for_images(response):
+        formattingInstructions = (
+            f"""
+            Convert the following Response into Python code that creates a pandas DataFrame.
+            The output should ONLY contain valid Python code that creates a DataFrame variable named 'df'.
+            No explanations, no markdown formatting or ```python tags, just the raw executable Python code.
 
-        base64_pattern = re.compile(r'(data:image\/(png|jpg|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+)')
+            Response:
+            {response}
 
-        formatted_response = base64_pattern.sub(r'<img src="\1" alt="Embedded Image">', response)
+            Example output format:
+            import pandas as pd
+            data = [
+                ['Category1', 100, 25.5],
+                ['Category2', 150, 30.2],
+                # more rows...
+            ]
+            df = pd.DataFrame(data, columns=['Category', 'Value', 'Percentage'])
 
-        return formatted_response
+            NOTE: Do NOT include ```python or ``` markers around the code. Return ONLY the raw Python code.
+            """
+        )
 
-    # Example Usage
-    response_text = "Here is an image: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."
-    formatted_text = format_response_for_images(response_text)
-    print(formatted_text)
+        prompt = f"{formattingInstructions}\n\nResponse:\n{response}"
 
+        llm = self.getChatOpenAI(modelName="gpt-4o")
+
+        cleanedResponse = llm.invoke(prompt).content
+        print('cleaned response is ',cleanedResponse)
+        try:
+            localVar = {}
+            exec(cleanedResponse, globals(), localVar)
+            if 'df' in localVar and isinstance(localVar['df'], pd.DataFrame):
+                df = localVar['df']
+                plot_image_base64 = self.visualize_dataframe(df, userInput)
+
+                if plot_image_base64:
+                    return True, plot_image_base64
+                else:
+                    return False,"Could not create visualization from the data"
+            else:
+                return False,"Failed to create DataFrame from SQL output"
+
+        except Exception as e:
+           return False,f"Error processing data: {str(e)}"
+
+    def visualize_dataframe(self, df, user_input):
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        import io
+        import base64
+        import pandas as pd
+        import numpy as np
+        from matplotlib.ticker import MaxNLocator
+
+        # Set a more modern style
+        plt.style.use('seaborn-v0_8-whitegrid')
+
+        viz_types = {
+            "plot": "line",
+            "graph": "line",
+            "chart": "bar",
+            "diagram": "scatter",
+            "bar": "bar",
+            "heatmap": "heatmap",
+            "pie": "pie",
+            "correlation": "heatmap",
+            "distribution": "hist",
+            "histogram": "hist",
+            "visualization": "auto"
+        }
+
+        # Determine requested visualization type
+        requested_viz = "auto"
+        for viz_keyword in viz_types:
+            if viz_keyword in user_input.lower():
+                requested_viz = viz_types[viz_keyword]
+                break
+
+        # Get column types
+        numeric_columns = df.select_dtypes(include=['number']).columns.tolist()
+        categorical_columns = df.select_dtypes(include=['object']).columns.tolist()
+        date_columns = [col for col in df.columns if pd.api.types.is_datetime64_any_dtype(df[col])]
+
+        # Define color palette
+        colors = ['#3498db', '#2ecc71', '#e74c3c', '#f39c12', '#9b59b6', '#1abc9c', '#34495e', '#d35400']
+
+        # Handle empty dataframes or insufficient columns
+        if df.empty:
+            return None
+
+        # Check if there's any column whose name contains "id"
+        id_cols = [col for col in categorical_columns if 'id' in col.lower()]
+        id_col = id_cols[0] if id_cols else None
+
+        # Configure figure with high DPI and better aspect ratio
+        plt.figure(figsize=(16, 9), dpi=100)
+
+        # Add a light gradient background for visual appeal
+        ax = plt.gca()
+        gradient = np.linspace(0, 1, 100).reshape(-1, 1)
+        gradient = np.repeat(gradient, 100, axis=1)
+        ax.imshow(
+            gradient, aspect='auto', extent=[0, 1, 0, 1],
+            transform=ax.transAxes, alpha=0.1, cmap='Blues_r', zorder=-1
+        )
+
+        # ---------------------------------------------------------------------
+        # 1) LINE PLOT
+        # ---------------------------------------------------------------------
+        if requested_viz == "line":
+            # We need at least one numeric column for the line’s y-values
+            if not numeric_columns:
+                return None
+
+            # If we have an "ID" column (object dtype), use that as x-labels;
+            # otherwise, fallback to the DataFrame index.
+            if id_col and df[id_col].dtype == 'object':
+                x_labels = df[id_col]
+            else:
+                x_labels = df.index.astype(str)
+
+            # Sort the DataFrame by the first numeric column, descending
+            df = df.sort_values(by=numeric_columns[0], ascending=False)
+
+            # Calculate marker size based on data size
+            marker_size = max(60 // len(df), 6)
+
+            # Create enhanced line plot
+            plt.plot(
+                range(len(df)), df[numeric_columns[0]],
+                marker='o', markersize=marker_size, linestyle='-', linewidth=2.5,
+                color=colors[0], alpha=0.9
+            )
+
+            # Gradient fill under the line
+            plt.fill_between(range(len(df)), df[numeric_columns[0]], alpha=0.2, color=colors[0])
+
+            # X-ticks setup
+            if len(df) > 20:
+                step = max(len(df) // 10, 1)
+                plt.xticks(range(0, len(df), step))
+                shown_indices = list(range(0, len(df), step))
+                plt.gca().set_xticklabels([x_labels.iloc[i] for i in shown_indices],
+                                          rotation=45, ha='right', fontsize=9)
+            else:
+                plt.xticks(range(len(df)))
+                plt.gca().set_xticklabels(x_labels, rotation=45, ha='right', fontsize=9)
+
+            # Annotate data values
+            y_max = df[numeric_columns[0]].max()
+            y_min = df[numeric_columns[0]].min()
+            y_range = y_max - y_min
+
+            for i, v in enumerate(df[numeric_columns[0]]):
+                # Skip some labels if too many data points
+                if len(df) > 20 and i % (len(df) // 10) != 0:
+                    continue
+
+                y_pos = v + y_range * 0.03
+                plt.text(
+                    i, y_pos, f"{v:.1f}",
+                    ha='center', va='bottom',
+                    fontsize=9, fontweight='bold', color='#555555'
+                )
+
+            plt.title(f"{numeric_columns[0]} by {id_col if id_col else 'Index'}",
+                      fontsize=14, pad=20, fontweight='bold')
+            plt.ylabel(numeric_columns[0], fontsize=12, labelpad=15)
+            plt.xlabel(id_col if id_col else "Index", fontsize=12, labelpad=15)
+            plt.grid(axis='y', linestyle='--', alpha=0.4, color='#cccccc')
+
+            # Subtle horizontal lines
+            y_ticks = plt.yticks()[0]
+            for y in y_ticks:
+                plt.axhline(y=y, color='#dddddd', linestyle='-', alpha=0.3, zorder=-1)
+
+        # ---------------------------------------------------------------------
+        # 2) BAR CHART
+        # ---------------------------------------------------------------------
+        elif requested_viz == "bar" or (requested_viz == "auto" and len(numeric_columns) > 0):
+            if not numeric_columns:
+                return None
+
+            # If there's a categorical column, use that as x-labels; otherwise, use the index
+            if categorical_columns:
+                x_labels = df[categorical_columns[0]]
+            else:
+                x_labels = df.index.astype(str)
+
+            df = df.sort_values(by=numeric_columns[0], ascending=False)
+
+            bars = plt.bar(
+                range(len(df)), df[numeric_columns[0]],
+                width=0.7, color=colors[0], alpha=0.85, edgecolor='white', linewidth=1.5
+            )
+
+            # Add gradient effect to bars
+            for i, bar in enumerate(bars):
+                bar_color = colors[i % len(colors)]
+                bar.set_color(bar_color)
+                bar.set_alpha(0.85)
+                bar.set_edgecolor('white')
+                bar.set_linewidth(1.5)
+
+            plt.xticks(range(len(df)))
+            plt.gca().set_xticklabels(x_labels, rotation=45, ha='right', fontsize=9)
+
+            # Value labels
+            max_val = df[numeric_columns[0]].max()
+            for i, v in enumerate(df[numeric_columns[0]]):
+                plt.text(
+                    i, v + max_val * 0.02, f"{v:.1f}",
+                    ha='center', fontsize=10, fontweight='bold', color='#555555'
+                )
+
+            plt.title(f"{numeric_columns[0]} by {categorical_columns[0] if categorical_columns else 'Index'}",
+                      fontsize=14, pad=20, fontweight='bold')
+            plt.ylabel(numeric_columns[0], fontsize=12, labelpad=15)
+            plt.xlabel(categorical_columns[0] if categorical_columns else "Index", fontsize=12, labelpad=15)
+            plt.grid(axis='y', linestyle='--', alpha=0.3, color='#dddddd')
+
+        # ---------------------------------------------------------------------
+        # 3) SCATTER PLOT
+        # ---------------------------------------------------------------------
+        elif requested_viz == "scatter" or (requested_viz == "auto" and len(numeric_columns) >= 2):
+            # We need at least 2 numeric columns to do a scatter
+            if len(numeric_columns) < 2:
+                return None
+
+            # Enhanced scatter plot with size based on third metric if available
+            if len(numeric_columns) >= 3:
+                min_size, max_size = 50, 300
+                third_col = numeric_columns[2]
+                norm_sizes = (
+                        (df[third_col] - df[third_col].min()) /
+                        (df[third_col].max() - df[third_col].min())
+                )
+                scatter_size = min_size + norm_sizes * (max_size - min_size)
+            else:
+                scatter_size = 100
+
+            plt.scatter(
+                df[numeric_columns[0]], df[numeric_columns[1]],
+                s=scatter_size, c=colors[:len(df)], alpha=0.7,
+                edgecolors='white', linewidth=1.5
+            )
+
+            # Add trend line if enough points
+            if len(df) > 2:
+                z = np.polyfit(df[numeric_columns[0]], df[numeric_columns[1]], 1)
+                p = np.poly1d(z)
+                x_range = np.linspace(df[numeric_columns[0]].min(), df[numeric_columns[0]].max(), 100)
+                plt.plot(x_range, p(x_range), "--", color="#555555", alpha=0.8, linewidth=2)
+
+                # Correlation
+                corr = df[numeric_columns[:2]].corr().iloc[0, 1]
+                plt.annotate(
+                    f"Correlation: {corr:.2f}",
+                    xy=(0.05, 0.95), xycoords='axes fraction',
+                    fontsize=10, fontweight='bold',
+                    bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8)
+                )
+
+            plt.title(f"Relationship between {numeric_columns[0]} and {numeric_columns[1]}",
+                      fontsize=14, pad=20, fontweight='bold')
+            plt.xlabel(numeric_columns[0], fontsize=12, labelpad=15)
+            plt.ylabel(numeric_columns[1], fontsize=12, labelpad=15)
+            plt.grid(True, linestyle='--', alpha=0.3, color='#dddddd')
+
+        # ---------------------------------------------------------------------
+        # 4) HEATMAP
+        # ---------------------------------------------------------------------
+        elif requested_viz == "heatmap" and len(numeric_columns) >= 2:
+            corr_matrix = df[numeric_columns].corr()
+            sns.heatmap(
+                corr_matrix, annot=True, cmap='coolwarm',
+                linewidths=0.5, linecolor='white', fmt='.2f',
+                cbar_kws={"shrink": 0.8}
+            )
+            plt.title("Correlation Heatmap of Numeric Variables",
+                      fontsize=14, pad=20, fontweight='bold')
+
+        # ---------------------------------------------------------------------
+        # 5) PIE CHART
+        # ---------------------------------------------------------------------
+        elif requested_viz == "pie" and len(categorical_columns) > 0:
+            counts = df[categorical_columns[0]].value_counts()
+
+            # Limit segments if too many
+            if len(counts) > 8:
+                other_count = counts[8:].sum()
+                counts = counts[:7]
+                counts['Other'] = other_count
+
+            wedges, texts, autotexts = plt.pie(
+                counts,
+                labels=counts.index,
+                colors=colors[:len(counts)],
+                autopct='%1.1f%%',
+                startangle=90,
+                wedgeprops={'edgecolor': 'white', 'linewidth': 2, 'antialiased': True},
+                textprops={'fontsize': 10, 'fontweight': 'bold'},
+                shadow=True,
+                explode=[0.05] * len(counts)
+            )
+
+            for autotext in autotexts:
+                autotext.set_color('white')
+                autotext.set_fontweight('bold')
+
+            plt.title(f"Distribution of {categorical_columns[0]}",
+                      fontsize=14, pad=20, fontweight='bold')
+
+        # ---------------------------------------------------------------------
+        # 6) HISTOGRAM
+        # ---------------------------------------------------------------------
+        elif requested_viz == "hist" and len(numeric_columns) > 0:
+            # Create enhanced histogram
+            n, bins, patches = plt.hist(
+                df[numeric_columns[0]],
+                bins=min(20, len(df[numeric_columns[0]].unique())),
+                color=colors[0],
+                alpha=0.8,
+                edgecolor='white',
+                linewidth=1.5
+            )
+
+            # Add KDE curve
+            sns.kdeplot(df[numeric_columns[0]], color='#e74c3c', linewidth=2.5)
+
+            # Add mean and median lines
+            mean_val = df[numeric_columns[0]].mean()
+            median_val = df[numeric_columns[0]].median()
+
+            plt.axvline(
+                mean_val, color='#2ecc71', linestyle='--', linewidth=2.5,
+                label=f'Mean: {mean_val:.2f}'
+            )
+            plt.axvline(
+                median_val, color='#3498db', linestyle='-.', linewidth=2.5,
+                label=f'Median: {median_val:.2f}'
+            )
+
+            plt.legend(fontsize=10)
+            plt.title(f"Distribution of {numeric_columns[0]}",
+                      fontsize=14, pad=20, fontweight='bold')
+            plt.xlabel(numeric_columns[0], fontsize=12, labelpad=15)
+            plt.ylabel("Frequency", fontsize=12, labelpad=15)
+            plt.grid(axis='y', linestyle='--', alpha=0.3)
+
+        # ---------------------------------------------------------------------
+        # 7) AUTO FALLBACK (if none of the above triggered)
+        # ---------------------------------------------------------------------
+        else:
+            # If "auto" is requested but no conditions match (e.g. no numeric columns),
+            # we can simply return None or produce a default plot. Here, we'll do None.
+            return None
+
+        # ---------------------------------------------------------------------
+        # Final styling touches
+        # ---------------------------------------------------------------------
+        # Remove top & right spines, style bottom & left
+        plt.gca().spines['top'].set_visible(False)
+        plt.gca().spines['right'].set_visible(False)
+        plt.gca().spines['bottom'].set_linewidth(1.2)
+        plt.gca().spines['left'].set_linewidth(1.2)
+        plt.gca().spines['bottom'].set_color('#555555')
+        plt.gca().spines['left'].set_color('#555555')
+
+        # Improve tick appearance
+        plt.tick_params(axis='both', which='major', labelsize=10, colors='#555555', length=5)
+
+        # Ensure y-axis uses a reasonable number of ticks
+        plt.gca().yaxis.set_major_locator(MaxNLocator(nbins=8))
+
+        # Adjust layout
+        plt.tight_layout(pad=3.0)
+
+        # Optional watermark
+        plt.figtext(0.99, 0.01, "DataViz", fontsize=8, color='gray', ha='right', alpha=0.5)
+
+        # Convert plot to base64 image
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+        buf.seek(0)
+        plot_base64 = base64.b64encode(buf.read()).decode('utf-8')
+        plt.close()
+
+        return plot_base64
+def visualize_dataframe(self, df, user_input):
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    import io
+    import base64
+    import pandas as pd
+    import numpy as np
+    from matplotlib.ticker import MaxNLocator
+
+    # Set a more modern style
+    plt.style.use('seaborn-v0_8-whitegrid')
+
+    viz_types = {
+        "plot": "line",
+        "graph": "line",
+        "chart": "bar",
+        "diagram": "scatter",
+        "bar": "bar",
+        "heatmap": "heatmap",
+        "pie": "pie",
+        "correlation": "heatmap",
+        "distribution": "hist",
+        "histogram": "hist",
+        "visualization": "auto"
+    }
+
+    # Determine requested visualization type
+    requested_viz = "auto"
+    for viz_keyword in viz_types:
+        if viz_keyword in user_input.lower():
+            requested_viz = viz_types[viz_keyword]
+            break
+
+    # Get column types
+    numeric_columns = df.select_dtypes(include=['number']).columns.tolist()
+    categorical_columns = df.select_dtypes(include=['object']).columns.tolist()
+    date_columns = [col for col in df.columns if pd.api.types.is_datetime64_any_dtype(df[col])]
+
+    # Define color palette
+    colors = ['#3498db', '#2ecc71', '#e74c3c', '#f39c12', '#9b59b6', '#1abc9c', '#34495e', '#d35400']
+
+    # Handle empty dataframes or insufficient columns
+    if df.empty:
+        return None
+
+    # Check if there's any column whose name contains "id"
+    id_cols = [col for col in categorical_columns if 'id' in col.lower()]
+    id_col = id_cols[0] if id_cols else None
+
+    # Configure figure with high DPI and better aspect ratio
+    plt.figure(figsize=(16, 9), dpi=100)
+
+    # Add a light gradient background for visual appeal
+    ax = plt.gca()
+    gradient = np.linspace(0, 1, 100).reshape(-1, 1)
+    gradient = np.repeat(gradient, 100, axis=1)
+    ax.imshow(
+        gradient, aspect='auto', extent=[0, 1, 0, 1],
+        transform=ax.transAxes, alpha=0.1, cmap='Blues_r', zorder=-1
+    )
+
+    # ---------------------------------------------------------------------
+    # 1) LINE PLOT
+    # ---------------------------------------------------------------------
+    if requested_viz == "line":
+        # We need at least one numeric column for the line’s y-values
+        if not numeric_columns:
+            return None
+
+        # If we have an "ID" column (object dtype), use that as x-labels;
+        # otherwise, fallback to the DataFrame index.
+        if id_col and df[id_col].dtype == 'object':
+            x_labels = df[id_col]
+        else:
+            x_labels = df.index.astype(str)
+
+        # Sort the DataFrame by the first numeric column, descending
+        df = df.sort_values(by=numeric_columns[0], ascending=False)
+
+        # Calculate marker size based on data size
+        marker_size = max(60 // len(df), 6)
+
+        # Create enhanced line plot
+        plt.plot(
+            range(len(df)), df[numeric_columns[0]],
+            marker='o', markersize=marker_size, linestyle='-', linewidth=2.5,
+            color=colors[0], alpha=0.9
+        )
+
+        # Gradient fill under the line
+        plt.fill_between(range(len(df)), df[numeric_columns[0]], alpha=0.2, color=colors[0])
+
+        # X-ticks setup
+        if len(df) > 20:
+            step = max(len(df) // 10, 1)
+            plt.xticks(range(0, len(df), step))
+            shown_indices = list(range(0, len(df), step))
+            plt.gca().set_xticklabels([x_labels.iloc[i] for i in shown_indices],
+                                      rotation=45, ha='right', fontsize=9)
+        else:
+            plt.xticks(range(len(df)))
+            plt.gca().set_xticklabels(x_labels, rotation=45, ha='right', fontsize=9)
+
+        # Annotate data values
+        y_max = df[numeric_columns[0]].max()
+        y_min = df[numeric_columns[0]].min()
+        y_range = y_max - y_min
+
+        for i, v in enumerate(df[numeric_columns[0]]):
+            # Skip some labels if too many data points
+            if len(df) > 20 and i % (len(df) // 10) != 0:
+                continue
+
+            y_pos = v + y_range * 0.03
+            plt.text(
+                i, y_pos, f"{v:.1f}",
+                ha='center', va='bottom',
+                fontsize=9, fontweight='bold', color='#555555'
+            )
+
+        plt.title(f"{numeric_columns[0]} by {id_col if id_col else 'Index'}",
+                  fontsize=14, pad=20, fontweight='bold')
+        plt.ylabel(numeric_columns[0], fontsize=12, labelpad=15)
+        plt.xlabel(id_col if id_col else "Index", fontsize=12, labelpad=15)
+        plt.grid(axis='y', linestyle='--', alpha=0.4, color='#cccccc')
+
+        # Subtle horizontal lines
+        y_ticks = plt.yticks()[0]
+        for y in y_ticks:
+            plt.axhline(y=y, color='#dddddd', linestyle='-', alpha=0.3, zorder=-1)
+
+    # ---------------------------------------------------------------------
+    # 2) BAR CHART
+    # ---------------------------------------------------------------------
+    elif requested_viz == "bar" or (requested_viz == "auto" and len(numeric_columns) > 0):
+        if not numeric_columns:
+            return None
+
+        # If there's a categorical column, use that as x-labels; otherwise, use the index
+        if categorical_columns:
+            x_labels = df[categorical_columns[0]]
+        else:
+            x_labels = df.index.astype(str)
+
+        df = df.sort_values(by=numeric_columns[0], ascending=False)
+
+        bars = plt.bar(
+            range(len(df)), df[numeric_columns[0]],
+            width=0.7, color=colors[0], alpha=0.85, edgecolor='white', linewidth=1.5
+        )
+
+        # Add gradient effect to bars
+        for i, bar in enumerate(bars):
+            bar_color = colors[i % len(colors)]
+            bar.set_color(bar_color)
+            bar.set_alpha(0.85)
+            bar.set_edgecolor('white')
+            bar.set_linewidth(1.5)
+
+        plt.xticks(range(len(df)))
+        plt.gca().set_xticklabels(x_labels, rotation=45, ha='right', fontsize=9)
+
+        # Value labels
+        max_val = df[numeric_columns[0]].max()
+        for i, v in enumerate(df[numeric_columns[0]]):
+            plt.text(
+                i, v + max_val * 0.02, f"{v:.1f}",
+                ha='center', fontsize=10, fontweight='bold', color='#555555'
+            )
+
+        plt.title(f"{numeric_columns[0]} by {categorical_columns[0] if categorical_columns else 'Index'}",
+                  fontsize=14, pad=20, fontweight='bold')
+        plt.ylabel(numeric_columns[0], fontsize=12, labelpad=15)
+        plt.xlabel(categorical_columns[0] if categorical_columns else "Index", fontsize=12, labelpad=15)
+        plt.grid(axis='y', linestyle='--', alpha=0.3, color='#dddddd')
+
+    # ---------------------------------------------------------------------
+    # 3) SCATTER PLOT
+    # ---------------------------------------------------------------------
+    elif requested_viz == "scatter" or (requested_viz == "auto" and len(numeric_columns) >= 2):
+        # We need at least 2 numeric columns to do a scatter
+        if len(numeric_columns) < 2:
+            return None
+
+        # Enhanced scatter plot with size based on third metric if available
+        if len(numeric_columns) >= 3:
+            min_size, max_size = 50, 300
+            third_col = numeric_columns[2]
+            norm_sizes = (
+                (df[third_col] - df[third_col].min()) /
+                (df[third_col].max() - df[third_col].min())
+            )
+            scatter_size = min_size + norm_sizes * (max_size - min_size)
+        else:
+            scatter_size = 100
+
+        plt.scatter(
+            df[numeric_columns[0]], df[numeric_columns[1]],
+            s=scatter_size, c=colors[:len(df)], alpha=0.7,
+            edgecolors='white', linewidth=1.5
+        )
+
+        # Add trend line if enough points
+        if len(df) > 2:
+            z = np.polyfit(df[numeric_columns[0]], df[numeric_columns[1]], 1)
+            p = np.poly1d(z)
+            x_range = np.linspace(df[numeric_columns[0]].min(), df[numeric_columns[0]].max(), 100)
+            plt.plot(x_range, p(x_range), "--", color="#555555", alpha=0.8, linewidth=2)
+
+            # Correlation
+            corr = df[numeric_columns[:2]].corr().iloc[0, 1]
+            plt.annotate(
+                f"Correlation: {corr:.2f}",
+                xy=(0.05, 0.95), xycoords='axes fraction',
+                fontsize=10, fontweight='bold',
+                bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8)
+            )
+
+        plt.title(f"Relationship between {numeric_columns[0]} and {numeric_columns[1]}",
+                  fontsize=14, pad=20, fontweight='bold')
+        plt.xlabel(numeric_columns[0], fontsize=12, labelpad=15)
+        plt.ylabel(numeric_columns[1], fontsize=12, labelpad=15)
+        plt.grid(True, linestyle='--', alpha=0.3, color='#dddddd')
+
+    # ---------------------------------------------------------------------
+    # 4) HEATMAP
+    # ---------------------------------------------------------------------
+    elif requested_viz == "heatmap" and len(numeric_columns) >= 2:
+        corr_matrix = df[numeric_columns].corr()
+        sns.heatmap(
+            corr_matrix, annot=True, cmap='coolwarm',
+            linewidths=0.5, linecolor='white', fmt='.2f',
+            cbar_kws={"shrink": 0.8}
+        )
+        plt.title("Correlation Heatmap of Numeric Variables",
+                  fontsize=14, pad=20, fontweight='bold')
+
+    # ---------------------------------------------------------------------
+    # 5) PIE CHART
+    # ---------------------------------------------------------------------
+    elif requested_viz == "pie" and len(categorical_columns) > 0:
+        counts = df[categorical_columns[0]].value_counts()
+
+        # Limit segments if too many
+        if len(counts) > 8:
+            other_count = counts[8:].sum()
+            counts = counts[:7]
+            counts['Other'] = other_count
+
+        wedges, texts, autotexts = plt.pie(
+            counts,
+            labels=counts.index,
+            colors=colors[:len(counts)],
+            autopct='%1.1f%%',
+            startangle=90,
+            wedgeprops={'edgecolor': 'white', 'linewidth': 2, 'antialiased': True},
+            textprops={'fontsize': 10, 'fontweight': 'bold'},
+            shadow=True,
+            explode=[0.05] * len(counts)
+        )
+
+        for autotext in autotexts:
+            autotext.set_color('white')
+            autotext.set_fontweight('bold')
+
+        plt.title(f"Distribution of {categorical_columns[0]}",
+                  fontsize=14, pad=20, fontweight='bold')
+
+    # ---------------------------------------------------------------------
+    # 6) HISTOGRAM
+    # ---------------------------------------------------------------------
+    elif requested_viz == "hist" and len(numeric_columns) > 0:
+        # Create enhanced histogram
+        n, bins, patches = plt.hist(
+            df[numeric_columns[0]],
+            bins=min(20, len(df[numeric_columns[0]].unique())),
+            color=colors[0],
+            alpha=0.8,
+            edgecolor='white',
+            linewidth=1.5
+        )
+
+        # Add KDE curve
+        sns.kdeplot(df[numeric_columns[0]], color='#e74c3c', linewidth=2.5)
+
+        # Add mean and median lines
+        mean_val = df[numeric_columns[0]].mean()
+        median_val = df[numeric_columns[0]].median()
+
+        plt.axvline(
+            mean_val, color='#2ecc71', linestyle='--', linewidth=2.5,
+            label=f'Mean: {mean_val:.2f}'
+        )
+        plt.axvline(
+            median_val, color='#3498db', linestyle='-.', linewidth=2.5,
+            label=f'Median: {median_val:.2f}'
+        )
+
+        plt.legend(fontsize=10)
+        plt.title(f"Distribution of {numeric_columns[0]}",
+                  fontsize=14, pad=20, fontweight='bold')
+        plt.xlabel(numeric_columns[0], fontsize=12, labelpad=15)
+        plt.ylabel("Frequency", fontsize=12, labelpad=15)
+        plt.grid(axis='y', linestyle='--', alpha=0.3)
+
+    # ---------------------------------------------------------------------
+    # 7) AUTO FALLBACK (if none of the above triggered)
+    # ---------------------------------------------------------------------
+    else:
+        # If "auto" is requested but no conditions match (e.g. no numeric columns),
+        # we can simply return None or produce a default plot. Here, we'll do None.
+        return None
+
+    # ---------------------------------------------------------------------
+    # Final styling touches
+    # ---------------------------------------------------------------------
+    # Remove top & right spines, style bottom & left
+    plt.gca().spines['top'].set_visible(False)
+    plt.gca().spines['right'].set_visible(False)
+    plt.gca().spines['bottom'].set_linewidth(1.2)
+    plt.gca().spines['left'].set_linewidth(1.2)
+    plt.gca().spines['bottom'].set_color('#555555')
+    plt.gca().spines['left'].set_color('#555555')
+
+    # Improve tick appearance
+    plt.tick_params(axis='both', which='major', labelsize=10, colors='#555555', length=5)
+
+    # Ensure y-axis uses a reasonable number of ticks
+    plt.gca().yaxis.set_major_locator(MaxNLocator(nbins=8))
+
+    # Adjust layout
+    plt.tight_layout(pad=3.0)
+
+    # Optional watermark
+    plt.figtext(0.99, 0.01, "DataViz", fontsize=8, color='gray', ha='right', alpha=0.5)
+
+    # Convert plot to base64 image
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    buf.seek(0)
+    plot_base64 = base64.b64encode(buf.read()).decode('utf-8')
+    plt.close()
+
+    return plot_base64
